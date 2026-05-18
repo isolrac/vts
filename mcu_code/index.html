@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VST Control</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, Helvetica, sans-serif;
+      background: #111;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    h1 {
+      font-size: 1.2rem;
+      font-weight: 600;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: #fff;
+      margin-bottom: 2rem;
+    }
+
+    .card {
+      background: #1c1c1c;
+      border-radius: 20px;
+      padding: 2rem;
+      width: 100%;
+      max-width: 360px;
+    }
+
+    .label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #666;
+      margin-bottom: 0.4rem;
+    }
+
+    .speed-value {
+      font-size: 4rem;
+      font-weight: 700;
+      color: #4ade80;
+      line-height: 1;
+      margin-bottom: 1.25rem;
+    }
+
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: #2e2e2e;
+      outline: none;
+      margin-bottom: 2rem;
+      cursor: pointer;
+    }
+
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #4ade80;
+      cursor: pointer;
+      box-shadow: 0 0 8px rgba(74, 222, 128, 0.4);
+    }
+
+    .divider {
+      height: 1px;
+      background: #2a2a2a;
+      margin-bottom: 1.5rem;
+    }
+
+    .battery-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+
+    .battery-value {
+      font-size: 1.4rem;
+      font-weight: 600;
+      color: #eee;
+    }
+
+    .battery-value.low { color: #f87171; }
+
+    .warning {
+      display: none;
+      margin-top: 1.5rem;
+      background: #ef4444;
+      color: #fff;
+      border-radius: 10px;
+      padding: 0.8rem 1rem;
+      text-align: center;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .warning.visible { display: block; }
+
+    .offline {
+      display: none;
+      margin-top: 1.5rem;
+      color: #666;
+      font-size: 0.8rem;
+      text-align: center;
+    }
+
+    .offline.visible { display: block; }
+  </style>
+</head>
+<body>
+  <h1>VST</h1>
+  <div class="card">
+    <div class="label">Speed</div>
+    <div class="speed-value" id="speedVal">50%</div>
+    <input type="range" min="0" max="100" value="50" id="slider">
+
+    <div class="divider"></div>
+
+    <div class="battery-row">
+      <div>
+        <div class="label">Battery</div>
+        <div class="battery-value" id="batVal">—</div>
+      </div>
+    </div>
+
+    <div class="warning" id="warning">⚠ Battery critical — motors stopped</div>
+    <div class="offline" id="offline">Lost connection to board</div>
+  </div>
+
+  <script>
+    const slider   = document.getElementById('slider');
+    const speedVal = document.getElementById('speedVal');
+    const batVal   = document.getElementById('batVal');
+    const warning  = document.getElementById('warning');
+    const offline  = document.getElementById('offline');
+
+    let debounceTimer;
+
+    slider.addEventListener('input', () => {
+      const value = slider.value;
+      speedVal.innerText = value + '%';
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        fetch('/setSpeed?value=' + value).catch(() => {});
+      }, 50);
+    });
+
+    function pollStatus() {
+      fetch('/status')
+        .then(r => r.json())
+        .then(data => {
+          offline.classList.remove('visible');
+
+          batVal.innerText = data.v_bat.toFixed(2) + ' V';
+          batVal.className = 'battery-value' + (data.critical ? ' low' : '');
+
+          warning.classList.toggle('visible', data.critical);
+
+          // Sync slider if speed was changed elsewhere (e.g. another browser tab)
+          if (Math.abs(parseInt(slider.value) - data.speed_pct) > 1) {
+            slider.value = data.speed_pct;
+            speedVal.innerText = data.speed_pct + '%';
+          }
+        })
+        .catch(() => {
+          offline.classList.add('visible');
+        });
+    }
+
+    pollStatus();
+    setInterval(pollStatus, 5000);
+  </script>
+</body>
+</html>

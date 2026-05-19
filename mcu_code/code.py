@@ -1,146 +1,174 @@
-import os
-import json
+import struct
 import time
 import board
 import pwmio
 import analogio
-import wifi
-import socketpool
-from adafruit_httpserver import Server, Request, Response
+from adafruit_ble import BLERadio
+from adafruit_ble.advertising.standard import ProvideServicesAdvertisement
+from adafruit_ble.services import Service
+from adafruit_ble.characteristics import Characteristic
+from adafruit_ble.characteristics.int import Uint8Characteristic
+from adafruit_ble.uuid import VendorDefinedUUID
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# ----- Configuration -----
 
 PWM_PIN = board.D2  # GPIO pin driving both DRV8833 IN lines
-ADC_PIN = board.D0  # GPIO pin reading the battery voltage divider (same physical pin as A0)
+ADC_PIN = board.D0  # GPIO pin reading the battery voltage divider
 
-PWM_FREQ    = 1000  # Hz — motor drive frequency; above mechanical response, below audible range
-SERVER_PORT = 8080  # port 80 is restricted on ESP32; 8080 is the standard alternative
+PWM_FREQ = 1000  # Hz
 
-R1 = 100000.0       # Ω — top leg of voltage divider, between battery+ and D0
-R2 = 360000.0       # Ω — bottom leg of voltage divider, between D0 and GND
+R1 = 100000.0  # ohm -- top leg of voltage divider
+R2 = 360000.0  # ohm -- bottom leg of voltage divider
 
-ADC_VREF = 3.3      # V — ESP32 ADC full-scale reference voltage
-ADC_MAX  = 65535    # counts — analogio normalises all ADC reads to 16-bit regardless of hardware resolution
+ADC_VREF = 3.3
+ADC_MAX = 65535
 
-ADC_OVERSAMPLE = 16 # readings averaged per battery sample to reduce ADC noise
+ADC_OVERSAMPLE = 16
 
-BATTERY_SAMPLE_INTERVAL = 0.5  # seconds — how often the battery voltage is checked
+BATTERY_SAMPLE_INTERVAL = 0.5  # seconds
 
-LDO_DROPOUT    = 3.18  # V — below this the LDO can't regulate; PWM is scaled up to compensate
-BATTERY_CUTOFF = 3.0   # V — minimum LiPo voltage; motors stop at or below this
+# LDO dropout at 3.18V, hard cutoff at 3.1V
+LDO_DROPOUT = 3.18
+BATTERY_CUTOFF = 3.1
 
-# ── Hardware init ─────────────────────────────────────────────────────────────
+# ----- GATT Service -----
+#
+# Speed char        (client -> device): uint8, 0-100 %
+# Device status char (device -> client): 4 bytes little-endian
+#   [0:2] battery voltage in mV  (uint16)
+#   [2]   speed percent          (uint8)
+#   [3]   battery critical flag  (uint8, 0 or 1)
+
+_SVC_UUID = VendorDefinedUUID("a8b40001-c4b9-4b5c-9d6e-1f2a3c4d5e6f")
+_SPEED_UUID = VendorDefinedUUID("a8b40002-c4b9-4b5c-9d6e-1f2a3c4d5e6f")
+_DEVICE_STATUS_UUID = VendorDefinedUUID("a8b40003-c4b9-4b5c-9d6e-1f2a3c4d5e6f")
+
+
+class VTSService(Service):
+    uuid = _SVC_UUID
+    speed = Uint8Characteristic(
+        uuid=_SPEED_UUID,
+        properties=Characteristic.WRITE | Characteristic.WRITE_NO_RESPONSE,
+        initial_value=0,
+    )
+    device_status = Characteristic(
+        uuid=_DEVICE_STATUS_UUID,
+        properties=Characteristic.READ | Characteristic.NOTIFY,
+        max_length=4,
+        fixed_length=True,
+        initial_value=bytes(4),
+    )
+
+
+# ----- Hardware init -----
 
 pwm = pwmio.PWMOut(PWM_PIN, duty_cycle=0, frequency=PWM_FREQ)
 adc = analogio.AnalogIn(ADC_PIN)
 
 time.sleep(0.1)  # let supply rails settle before any motor current flows
 
-# ── WiFi ──────────────────────────────────────────────────────────────────────
+# ----- BLE init -----
 
-wifi.radio.hostname = "vst"  # reachable at http://vst.local via mDNS
-wifi.radio.connect(os.getenv("WIFI_SSID"), os.getenv("WIFI_PASSWORD"))
-print("Connected. IP:", wifi.radio.ipv4_address)
+ble = BLERadio()
+ble.name = "VTS"
+vts_service = VTSService()
+advertisement = ProvideServicesAdvertisement(vts_service)
 
-pool   = socketpool.SocketPool(wifi.radio)
-server = Server(pool)
+# ----- State -----
 
-# ── State ─────────────────────────────────────────────────────────────────────
-
-# 0.5 = half rated voltage (1.5V avg) → ~6,000 RPM on a 12,000 RPM @ 3.0V motor
-target_duty       = 0.5
-battery_critical  = False
+target_duty = 0.0
+battery_critical = False
 last_battery_time = time.monotonic()
-_v_bat            = 3.7  # cached battery voltage; initialised to a safe mid-range value
+_battery_voltage = 3.7  # cached battery voltage; initialised to a safe mid-range value
+_advertising = False
 
-# ── Battery ───────────────────────────────────────────────────────────────────
+# ----- Battery -----
+
 
 def battery_read_voltage():
-    """Oversample ADC and apply voltage-divider scale. Returns battery voltage in volts."""
     total = sum(adc.value for _ in range(ADC_OVERSAMPLE))
-    v_adc = (total / ADC_OVERSAMPLE) / ADC_MAX * ADC_VREF
-    return v_adc * (R1 + R2) / R2
+    adc_voltage = (total / ADC_OVERSAMPLE) / ADC_MAX * ADC_VREF
+    return adc_voltage * (R1 + R2) / R2
 
-def battery_is_critical(v_bat):
-    """Returns True if v_bat is at or below the hard cutoff threshold."""
-    return v_bat <= BATTERY_CUTOFF
 
-# ── Motor ─────────────────────────────────────────────────────────────────────
+def battery_is_critical(battery_voltage):
+    return battery_voltage <= BATTERY_CUTOFF
 
-def motor_update_battery(v):
-    """Push a fresh battery reading so motor_set_duty() can compensate correctly."""
-    global _v_bat
-    _v_bat = v
+
+# ----- Motor -----
+
+
+def motor_update_battery(voltage):
+    global _battery_voltage
+    _battery_voltage = voltage
+
 
 def motor_set_duty(target):
-    """
-    Drive motors at normalised duty [0.0, 1.0] with low-battery PWM compensation.
-    Below LDO_DROPOUT the duty is scaled up to maintain roughly constant torque.
-    """
     effective = target
-    if _v_bat < LDO_DROPOUT:
-        effective = target * (BATTERY_CUTOFF / _v_bat)
+    if _battery_voltage < LDO_DROPOUT:
+        # Boost duty to compensate for reduced motor voltage when LDO sags
+        effective = target * (LDO_DROPOUT / _battery_voltage)
     effective = max(0.0, min(1.0, effective))
     pwm.duty_cycle = int(effective * 65535)
 
+
 def motor_stop():
-    """Immediately stop both motors."""
     pwm.duty_cycle = 0
 
-# ── Routes ────────────────────────────────────────────────────────────────────
 
-@server.route("/")
-def index(request: Request):
-    with open("index.html") as f:
-        return Response(request, f.read(), content_type="text/html")
+# ----- Status characteristic -----
 
-@server.route("/setSpeed")
-def set_speed(request: Request):
-    """Accept ?value=0-100 and update target_duty."""
-    global target_duty
-    try:
-        pct = float(request.query_params.get("value", 50))
-    except ValueError:
-        pct = 50.0
-    target_duty = max(0.0, min(100.0, pct)) / 100.0
-    return Response(request, "OK")
 
-@server.route("/status")
-def get_status(request: Request):
-    """Return current battery voltage, critical flag, and speed as JSON."""
-    return Response(
-        request,
-        json.dumps({
-            "v_bat":     round(_v_bat, 2),
-            "critical":  battery_critical,
-            "speed_pct": int(target_duty * 100),
-        }),
-        content_type="application/json",
-    )
+def push_status():
+    battery_voltage_millivolts = int(_battery_voltage * 1000)
+    speed_percent = int(target_duty * 100)
+    critical = 1 if battery_critical else 0
+    vts_service.device_status = struct.pack("<HBB", battery_voltage_millivolts, speed_percent, critical)
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
 
-server.start("0.0.0.0", SERVER_PORT)
-print("Listening at http://" + str(wifi.radio.ipv4_address) + ":" + str(SERVER_PORT))
+# ----- Main loop -----
 
-while True:
-    server.poll()  # handle any pending HTTP request before anything else
+print("Starting BLE advertising as VTS")
 
-    now = time.monotonic()
-
-    if now - last_battery_time >= BATTERY_SAMPLE_INTERVAL:
-        last_battery_time = now
-        v_bat = battery_read_voltage()
-
-        if battery_is_critical(v_bat):
-            battery_critical = True
-            motor_stop()
+try:
+    while True:
+        if not ble.connected:
+            motor_stop()  # stop motors whenever the client disconnects
+            if not _advertising:
+                ble.start_advertising(advertisement)
+                _advertising = True
+            time.sleep(0.01)
             continue
 
-        battery_critical = False
-        motor_update_battery(v_bat)
+        # First connection event: stop advertising
+        if _advertising:
+            ble.stop_advertising()
+            _advertising = False
 
-    if battery_critical:
-        continue
+        # Apply speed written by the client
+        percent = vts_service.speed
+        if percent is not None:
+            target_duty = max(0, min(100, int(percent))) / 100.0
 
-    motor_set_duty(target_duty)
+        now = time.monotonic()
+
+        if now - last_battery_time >= BATTERY_SAMPLE_INTERVAL:
+            last_battery_time = now
+            battery_voltage = battery_read_voltage()
+
+            if battery_is_critical(battery_voltage):
+                battery_critical = True
+                motor_stop()
+                push_status()
+                continue
+
+            battery_critical = False
+            motor_update_battery(battery_voltage)
+            push_status()
+
+        if battery_critical:
+            continue
+
+        motor_set_duty(target_duty)
+finally:
+    motor_stop()

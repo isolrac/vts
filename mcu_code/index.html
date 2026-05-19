@@ -63,6 +63,11 @@
       cursor: pointer;
     }
 
+    input[type=range]:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
     input[type=range]::-webkit-slider-thumb {
       -webkit-appearance: none;
       width: 28px;
@@ -93,93 +98,174 @@
 
     .battery-value.low { color: #f87171; }
 
-    .warning {
+    button {
+      display: block;
+      width: 100%;
+      margin-top: 1.5rem;
+      padding: 0.75rem;
+      border: none;
+      border-radius: 12px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: #4ade80;
+      color: #111;
+      transition: background 0.15s;
+    }
+
+    button:hover { background: #22c55e; }
+    button.disconnect { background: #3f3f3f; color: #eee; }
+    button.disconnect:hover { background: #555; }
+
+    .banner {
       display: none;
       margin-top: 1.5rem;
-      background: #ef4444;
-      color: #fff;
       border-radius: 10px;
       padding: 0.8rem 1rem;
       text-align: center;
-      font-size: 0.9rem;
+      font-size: 0.85rem;
       font-weight: 600;
     }
 
-    .warning.visible { display: block; }
-
-    .offline {
-      display: none;
-      margin-top: 1.5rem;
-      color: #666;
-      font-size: 0.8rem;
-      text-align: center;
-    }
-
-    .offline.visible { display: block; }
+    .banner.warning  { background: #ef4444; color: #fff; }
+    .banner.fault    { background: #f97316; color: #fff; }
+    .banner.info     { background: #3f3f3f; color: #aaa; }
+    .banner.visible  { display: block; }
   </style>
 </head>
 <body>
   <h1>VST</h1>
   <div class="card">
     <div class="label">Speed</div>
-    <div class="speed-value" id="speedVal">50%</div>
-    <input type="range" min="0" max="100" value="50" id="slider">
+    <div class="speed-value" id="speedVal">0%</div>
+    <input type="range" min="0" max="100" value="0" id="slider" disabled>
 
     <div class="divider"></div>
 
     <div class="battery-row">
       <div>
         <div class="label">Battery</div>
-        <div class="battery-value" id="batVal">—</div>
+        <div class="battery-value" id="batVal">--</div>
       </div>
     </div>
 
-    <div class="warning" id="warning">⚠ Battery critical — motors stopped</div>
-    <div class="offline" id="offline">Lost connection to board</div>
+    <button id="connectBtn">Connect</button>
+
+    <div class="banner warning" id="warnBattery">Battery critical -- motors stopped</div>
+    <div class="banner fault"   id="warnFault">Motor fault detected</div>
+    <div class="banner info"    id="infoDisconnected">Disconnected from device</div>
   </div>
 
   <script>
-    const slider   = document.getElementById('slider');
-    const speedVal = document.getElementById('speedVal');
-    const batVal   = document.getElementById('batVal');
-    const warning  = document.getElementById('warning');
-    const offline  = document.getElementById('offline');
+    // ----- GATT UUIDs (must match code.py) -----
+    const SVC_UUID    = 'a8b40001-c4b9-4b5c-9d6e-1f2a3c4d5e6f';
+    const SPEED_UUID  = 'a8b40002-c4b9-4b5c-9d6e-1f2a3c4d5e6f';
+    const STATUS_UUID = 'a8b40003-c4b9-4b5c-9d6e-1f2a3c4d5e6f';
 
-    let debounceTimer;
+    // ----- DOM -----
+    const slider      = document.getElementById('slider');
+    const speedVal    = document.getElementById('speedVal');
+    const batVal      = document.getElementById('batVal');
+    const connectBtn  = document.getElementById('connectBtn');
+    const warnBattery = document.getElementById('warnBattery');
+    const warnFault   = document.getElementById('warnFault');
+    const infoDisc    = document.getElementById('infoDisconnected');
 
-    slider.addEventListener('input', () => {
-      const value = slider.value;
-      speedVal.innerText = value + '%';
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        fetch('/setSpeed?value=' + value).catch(() => {});
-      }, 50);
+    // ----- State -----
+    let speedChar  = null;
+    let gattServer = null;
+    let debounce   = null;
+
+    // ----- BLE connection -----
+    connectBtn.addEventListener('click', async () => {
+      if (gattServer && gattServer.connected) {
+        gattServer.disconnect();
+        return;
+      }
+
+      try {
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ services: [SVC_UUID] }],
+          optionalServices: [],
+        });
+
+        device.addEventListener('gattserverdisconnected', onDisconnect);
+
+        gattServer = await device.gatt.connect();
+        const svc  = await gattServer.getPrimaryService(SVC_UUID);
+
+        speedChar = await svc.getCharacteristic(SPEED_UUID);
+
+        const statusChar = await svc.getCharacteristic(STATUS_UUID);
+        await statusChar.startNotifications();
+        statusChar.addEventListener('characteristicvaluechanged', onStatus);
+
+        onConnect();
+      } catch (err) {
+        if (err.name !== 'NotFoundError' && err.name !== 'AbortError') {
+          console.error('BLE error:', err);
+        }
+      }
     });
 
-    function pollStatus() {
-      fetch('/status')
-        .then(r => r.json())
-        .then(data => {
-          offline.classList.remove('visible');
-
-          batVal.innerText = data.v_bat.toFixed(2) + ' V';
-          batVal.className = 'battery-value' + (data.critical ? ' low' : '');
-
-          warning.classList.toggle('visible', data.critical);
-
-          // Sync slider if speed was changed elsewhere (e.g. another browser tab)
-          if (Math.abs(parseInt(slider.value) - data.speed_pct) > 1) {
-            slider.value = data.speed_pct;
-            speedVal.innerText = data.speed_pct + '%';
-          }
-        })
-        .catch(() => {
-          offline.classList.add('visible');
-        });
+    function onConnect() {
+      connectBtn.textContent = 'Disconnect';
+      connectBtn.classList.add('disconnect');
+      slider.disabled = false;
+      infoDisc.classList.remove('visible');
     }
 
-    pollStatus();
-    setInterval(pollStatus, 5000);
+    function onDisconnect() {
+      connectBtn.textContent = 'Connect';
+      connectBtn.classList.remove('disconnect');
+      slider.disabled = true;
+      speedChar  = null;
+      gattServer = null;
+      infoDisc.classList.add('visible');
+      warnBattery.classList.remove('visible');
+      warnFault.classList.remove('visible');
+    }
+
+    // ----- Status notification -----
+    // Packet layout (little-endian): uint16 battery_mv | uint8 speed_pct | uint8 flags
+    // flags: bit0 = battery_critical, bit1 = motor_fault
+    function onStatus(event) {
+      const view    = new DataView(event.target.value.buffer);
+      const vMv     = view.getUint16(0, true);
+      const pct     = view.getUint8(2);
+      const flags   = view.getUint8(3);
+      const batCrit = (flags & 0x01) !== 0;
+      const fault   = (flags & 0x02) !== 0;
+
+      batVal.textContent = (vMv / 1000).toFixed(2) + ' V';
+      batVal.className = 'battery-value' + (batCrit ? ' low' : '');
+
+      warnBattery.classList.toggle('visible', batCrit);
+      warnFault.classList.toggle('visible', fault);
+
+      // Sync slider if speed changed on-device (e.g. battery cutoff zeroed it)
+      if (Math.abs(parseInt(slider.value) - pct) > 1) {
+        slider.value = pct;
+        speedVal.textContent = pct + '%';
+      }
+    }
+
+    // ----- Speed slider -----
+    slider.addEventListener('input', () => {
+      const value = parseInt(slider.value);
+      speedVal.textContent = value + '%';
+      clearTimeout(debounce);
+      debounce = setTimeout(() => sendSpeed(value), 50);
+    });
+
+    async function sendSpeed(value) {
+      if (!speedChar) return;
+      try {
+        await speedChar.writeValueWithoutResponse(new Uint8Array([value]));
+      } catch (err) {
+        console.error('Write failed:', err);
+      }
+    }
   </script>
 </body>
 </html>

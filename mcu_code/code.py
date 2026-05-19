@@ -39,9 +39,9 @@ BATTERY_CUTOFF = 3.1
 #   [2]   speed percent          (uint8)
 #   [3]   battery critical flag  (uint8, 0 or 1)
 
-_SVC_UUID = VendorDefinedUUID("a8b40001-c4b9-4b5c-9d6e-1f2a3c4d5e6f")
-_SPEED_UUID = VendorDefinedUUID("a8b40002-c4b9-4b5c-9d6e-1f2a3c4d5e6f")
-_DEVICE_STATUS_UUID = VendorDefinedUUID("a8b40003-c4b9-4b5c-9d6e-1f2a3c4d5e6f")
+_SVC_UUID = VendorDefinedUUID("30c41c6a-fb6d-43f6-9452-360b85ebc2c2")
+_SPEED_UUID = VendorDefinedUUID("895a81a6-01a7-4643-b93b-e5969464ab83")
+_DEVICE_STATUS_UUID = VendorDefinedUUID("fb9eb7c9-7720-48bd-923e-c0f53174d950")
 
 
 class VTSService(Service):

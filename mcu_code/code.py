@@ -13,12 +13,11 @@ from adafruit_ble.uuid import VendorDefinedUUID
 # ----- Configuration -----
 
 PWM_PIN = board.D2  # GPIO pin driving both DRV8833 IN lines
-ADC_PIN = board.D0  # GPIO pin reading the battery voltage divider
 
 PWM_FREQ = 1000  # Hz
 
-R1 = 100000.0  # ohm -- top leg of voltage divider
-R2 = 360000.0  # ohm -- bottom leg of voltage divider
+BATTERY_ADC_PIN = board.A0  # onboard battery-sense ADC pin
+BATTERY_DIVIDER_RATIO = 2.0  # onboard divider (reads VBAT / 2)
 
 ADC_VREF = 3.3
 ADC_MAX = 65535
@@ -63,7 +62,7 @@ class VTSService(Service):
 # ----- Hardware init -----
 
 pwm = pwmio.PWMOut(PWM_PIN, duty_cycle=0, frequency=PWM_FREQ)
-adc = analogio.AnalogIn(ADC_PIN)
+adc = analogio.AnalogIn(BATTERY_ADC_PIN)
 
 time.sleep(0.1)  # let supply rails settle before any motor current flows
 
@@ -88,7 +87,7 @@ _advertising = False
 def battery_read_voltage():
     total = sum(adc.value for _ in range(ADC_OVERSAMPLE))
     adc_voltage = (total / ADC_OVERSAMPLE) / ADC_MAX * ADC_VREF
-    return adc_voltage * (R1 + R2) / R2
+    return adc_voltage * BATTERY_DIVIDER_RATIO
 
 
 def battery_is_critical(battery_voltage):

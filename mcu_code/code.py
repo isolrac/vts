@@ -1,6 +1,7 @@
 import struct
 import time
 import board
+import digitalio
 import pwmio
 import analogio
 from adafruit_ble import BLERadio
@@ -16,10 +17,11 @@ PWM_PIN = board.D2  # GPIO pin driving both DRV8833 IN lines
 
 PWM_FREQ = 1000  # Hz
 
-BATTERY_ADC_PIN = board.A0  # onboard battery-sense ADC pin
-BATTERY_DIVIDER_RATIO = 2.0  # onboard divider (reads VBAT / 2)
+BATTERY_ADC_PIN = board.VBATT  # XIAO nRF52840 internal VBAT sense (P0.31)
+BATTERY_ENABLE_PIN = board.READ_BATT_ENABLE  # drive low to power the divider (P0.14)
+# ponytail: nominal 1M/510k divider ratio; trim against a multimeter if voltage reads off.
+BATTERY_DIVIDER_RATIO = (1000.0 + 510.0) / 510.0
 
-ADC_VREF = 3.3
 ADC_MAX = 65535
 
 ADC_OVERSAMPLE = 16
@@ -62,6 +64,10 @@ class VTSService(Service):
 # ----- Hardware init -----
 
 pwm = pwmio.PWMOut(PWM_PIN, duty_cycle=0, frequency=PWM_FREQ)
+
+_batt_enable = digitalio.DigitalInOut(BATTERY_ENABLE_PIN)
+_batt_enable.direction = digitalio.Direction.OUTPUT
+_batt_enable.value = False  # active-low: pull low to connect the VBAT divider
 adc = analogio.AnalogIn(BATTERY_ADC_PIN)
 
 time.sleep(0.1)  # let supply rails settle before any motor current flows
@@ -86,7 +92,7 @@ _advertising = False
 
 def battery_read_voltage():
     total = sum(adc.value for _ in range(ADC_OVERSAMPLE))
-    adc_voltage = (total / ADC_OVERSAMPLE) / ADC_MAX * ADC_VREF
+    adc_voltage = (total / ADC_OVERSAMPLE) / ADC_MAX * adc.reference_voltage
     return adc_voltage * BATTERY_DIVIDER_RATIO
 
 

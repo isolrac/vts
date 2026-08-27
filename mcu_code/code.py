@@ -14,6 +14,7 @@ from adafruit_ble.uuid import VendorDefinedUUID
 # ----- Configuration -----
 
 PWM_PIN = board.D2  # GPIO pin driving both DRV8833 IN lines
+NFAULT_PIN = board.D3  # active-low DRV8833 nFAULT; external 10k pull-up on the schematic
 
 PWM_FREQ = 1000  # Hz
 
@@ -35,10 +36,11 @@ BATTERY_CUTOFF = 3.1
 # ----- GATT Service -----
 #
 # Speed char        (client -> device): uint8, 0-100 %
-# Device status char (device -> client): 4 bytes little-endian
+# Device status char (device -> client): 5 bytes little-endian
 #   [0:2] battery voltage in mV  (uint16)
 #   [2]   speed percent          (uint8)
 #   [3]   battery critical flag  (uint8, 0 or 1)
+#   [4]   motor fault latched    (uint8, 0 or 1)
 
 _SVC_UUID = VendorDefinedUUID("30c41c6a-fb6d-43f6-9452-360b85ebc2c2")
 _SPEED_UUID = VendorDefinedUUID("895a81a6-01a7-4643-b93b-e5969464ab83")
@@ -55,9 +57,9 @@ class VTSService(Service):
     device_status = Characteristic(
         uuid=_DEVICE_STATUS_UUID,
         properties=Characteristic.READ | Characteristic.NOTIFY,
-        max_length=4,
+        max_length=5,
         fixed_length=True,
-        initial_value=bytes(4),
+        initial_value=bytes(5),
     )
 
 
@@ -69,6 +71,10 @@ _batt_enable = digitalio.DigitalInOut(BATTERY_ENABLE_PIN)
 _batt_enable.direction = digitalio.Direction.OUTPUT
 _batt_enable.value = False  # active-low: pull low to connect the VBAT divider
 adc = analogio.AnalogIn(BATTERY_ADC_PIN)
+
+# R1 (10k) supplies the external pull-up; no internal pull needed.
+nfault = digitalio.DigitalInOut(NFAULT_PIN)
+nfault.direction = digitalio.Direction.INPUT
 
 time.sleep(0.1)  # let supply rails settle before any motor current flows
 
@@ -83,6 +89,7 @@ advertisement = ProvideServicesAdvertisement(vts_service)
 
 target_duty = 0.0
 battery_critical = False
+motor_fault_latched = False  # set on active-low nFAULT; cleared only by power cycle
 last_battery_time = time.monotonic()
 _battery_voltage = 3.7  # cached battery voltage; initialised to a safe mid-range value
 _advertising = False
@@ -128,7 +135,8 @@ def push_status():
     battery_voltage_millivolts = int(_battery_voltage * 1000)
     speed_percent = int(target_duty * 100)
     critical = 1 if battery_critical else 0
-    vts_service.device_status = struct.pack("<HBB", battery_voltage_millivolts, speed_percent, critical)
+    fault = 1 if motor_fault_latched else 0
+    vts_service.device_status = struct.pack("<HBBB", battery_voltage_millivolts, speed_percent, critical, fault)
 
 
 # ----- Main loop -----
@@ -149,6 +157,15 @@ try:
         if _advertising:
             ble.stop_advertising()
             _advertising = False
+
+        # Active-low DRV8833 fault: latch and keep motors off until power cycle.
+        if not nfault.value:
+            motor_fault_latched = True
+
+        if motor_fault_latched:
+            motor_stop()
+            push_status()
+            continue
 
         # Apply speed written by the client
         percent = vts_service.speed

@@ -164,13 +164,14 @@ The device advertises a custom GATT service. The client writes motor speed as a 
 
 **Speed:** uint8, write, range 0 (stopped) to 100 (full speed).
 
-**Device status:** 4 bytes, little-endian, read/notify.
+**Device status:** 5 bytes, little-endian, read/notify.
 
 | Bytes | Type | Field |
 |---|---|---|
 | 0-1 | uint16 | Battery voltage in mV |
 | 2 | uint8 | Speed percent (0-100) |
 | 3 | uint8 | Battery critical flag (0 or 1) |
+| 4 | uint8 | Motor fault latched (0 or 1) |
 
 ---
 

@@ -227,15 +227,13 @@
     }
 
     // ----- Status notification -----
-    // Packet layout (little-endian): uint16 battery_mv | uint8 speed_pct | uint8 flags
-    // flags: bit0 = battery_critical, bit1 = motor_fault
+    // Packet layout (little-endian): uint16 battery_mv | uint8 speed_pct | uint8 battery_critical | uint8 motor_fault
     function onStatus(event) {
       const view    = new DataView(event.target.value.buffer);
       const vMv     = view.getUint16(0, true);
       const pct     = view.getUint8(2);
-      const flags   = view.getUint8(3);
-      const batCrit = (flags & 0x01) !== 0;
-      const fault   = (flags & 0x02) !== 0;
+      const batCrit = view.getUint8(3) !== 0;
+      const fault   = view.getUint8(4) !== 0;
 
       batVal.textContent = (vMv / 1000).toFixed(2) + ' V';
       batVal.className = 'battery-value' + (batCrit ? ' low' : '');

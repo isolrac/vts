@@ -13,8 +13,9 @@ from adafruit_ble.uuid import VendorDefinedUUID
 
 # ----- Configuration -----
 
-PWM_PIN = board.D2  # GPIO pin driving both DRV8833 IN lines
-NFAULT_PIN = board.D3  # active-low DRV8833 nFAULT; external 10k pull-up on the schematic
+NFAULT_PIN = board.D2  # active-low DRV8833 nFAULT (blue wire); external 10k pull-up on the schematic
+PWM_PIN = board.D4  # GPIO pin driving both DRV8833 IN lines (yellow wire)
+NSLEEP_PIN = board.D5  # DRV8833 nSLEEP (green wire); active-low: high=enable, low=sleep/coast
 
 PWM_FREQ = 1000  # Hz
 
@@ -67,6 +68,12 @@ class VTSService(Service):
 
 pwm = pwmio.PWMOut(PWM_PIN, duty_cycle=0, frequency=PWM_FREQ)
 
+# DRV8833 nSLEEP is active-low. Hold the driver asleep (outputs Hi-Z) through
+# boot, then wake it once the rails have settled.
+nsleep = digitalio.DigitalInOut(NSLEEP_PIN)
+nsleep.direction = digitalio.Direction.OUTPUT
+nsleep.value = False  # asleep until rails settle
+
 _batt_enable = digitalio.DigitalInOut(BATTERY_ENABLE_PIN)
 _batt_enable.direction = digitalio.Direction.OUTPUT
 _batt_enable.value = False  # active-low: pull low to connect the VBAT divider
@@ -77,6 +84,7 @@ nfault = digitalio.DigitalInOut(NFAULT_PIN)
 nfault.direction = digitalio.Direction.INPUT
 
 time.sleep(0.1)  # let supply rails settle before any motor current flows
+nsleep.value = True  # nSLEEP high: enable the DRV8833
 
 # ----- BLE init -----
 

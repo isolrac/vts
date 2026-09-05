@@ -100,16 +100,18 @@ This project is independent from and is not affiliated with the aforementioned u
 | Seeed Studio XIAO nRF52840 | Microcontroller | non-Sense variant; CircuitPython 10.2.x |
 | AILUOMI DRV8833 breakout | Motor driver | Active-low nFAULT wired to XIAO D1 through R1 |
 | 3.3 V buck | Motor regulator | ~2 A capable; enters 100% duty near end of discharge, so the motor rail sags with the battery from that point on |
-| Adafruit 1781 | Protected 1S 2200 mAh Li-ion battery | Integral protection replaces the earlier external PCM + fuse; verify JST-PH polarity before first connection |
-| 2x Vybronics VZ7AL2B169208T | ERM vibration motors | 7x25mm cylindrical; 3.0 V nameplate, driven from the 3.3 V rail; 12,000 RPM |
-| Panasonic EEUFR1A221 | 220 uF driver bulk cap (C1) | Low-ESR aluminum electrolytic; mount at DRV8833 VM/GND |
-| 10 uF tantalum, >=10 V rating | Driver bulk cap (C2) | Mount at DRV8833 VM/GND |
-| 2x 100 nF X7R ceramic (KEMET C330C104M5U5TA or equiv) | Motor snubber caps (C3, C4) | Mount directly across the motor terminals, not at the controller end |
-| Yageo CFR-25JR-52-10K | 10 kohm nFAULT pull-up resistor (R1) | Pulls DRV8833 nFAULT to XIAO 3V3 |
+| Adafruit 1781 | Protected 1S 2200 mAh Li-ion battery | |
+| 2x Vybronics VZ7AL2B169208T | ERM vibration motors | 7x25mm cylinder |
+| Panasonic EEUFR1A221 | 220 uF driver bulk cap (C1) | electrolytic decoupling cap |
+| 10 uF tantalum, >=10 V rating | Driver bulk cap (C2) | tantalum decoupling cap |
+| 2x 100 nF X7R ceramic | Motor snubber caps (C3, C4) | soldered across motor terminals |
+| 10k Ohm through-hole resistor | 10 kohm nFAULT pull-up resistor (R1) | Pulls DRV8833 nFAULT to XIAO 3V3 |
 
 > **Note:** This BOM is a work in progress. Everything listed was available from DigiKey in the U.S. at the time of this writing
 
-The XIAO drives both ERM motors together through the DRV8833 from a single PWM pin. A 3.3 V buck regulator supplies the motor rail from the protected LiPo, and the DRV8833's active-low nFAULT is monitored on XIAO D1. Motor spec sheet lists 3.6V max at the motor terminals, and there's some voltage drop over the 3 feet of motor wiring, so we're within tolerances.
+- The MCU drives both ERM motors together through the DRV8833 from a single PWM pin.
+- A 3.3 V buck regulator supplies the motor rail from the protected LiPo, and the DRV8833's active-low nFAULT is monitored on XIAO D1.
+- Motor spec sheet lists 3.6V max at the motor terminals, and there's some voltage drop over the 3 feet of motor wiring, so we're within tolerances.
 
 
 ### Enclosure / Housing
@@ -117,12 +119,6 @@ The XIAO drives both ERM motors together through the DRV8833 from a single PWM p
 - 3D printed enclosures for the motors and main unit, customizable to the diameter and length of the ERM motors used, are included in this repository.
 - The bulk of the circuitry and battery lives in an external enclosure carried in the user's pocket. Silicone-coated wires powering each motor are twisted into a pair to mitigate interference alongside a length of unextruded TPU to lend mechanical strength, and heat-shrunk together at a few junctures just to keep the bundle cohesive. Each motor is in its own minimal housing that can be quickly put on and removed, reducing bulk around the user's neck.
 - **Motor cabling:** 24-26 AWG stranded copper, twisted pair per motor, with mechanical strain relief. Route motor wiring clear of external antenna / USB socket.
-
----
-
-## Charging & operating policy
-
-- The device is turned on and off by a switch inline in the battery lead. The switch also sits between the battery and the XIAO's onboard charger, so **USB-C charging only works while the switch is on** (with the switch off, USB can still power the XIAO logic over VBUS, but no current reaches the battery and the motor rail is dead).
 
 ---
 
@@ -135,7 +131,10 @@ The XIAO drives both ERM motors together through the DRV8833 from a single PWM p
 
 ### Installation
 
-Copy `code.py` to the root of the `CIRCUITPY` drive. On boot, the device immediately begins advertising over BLE.
+- flash the MCU with the circuitpython firmware image (https://circuitpython.org/board/Seeed_XIAO_nRF52840_Sense/)
+- The MCU should now be mounted as a writeable drive
+- Copy `code.py` to the root of the `CIRCUITPY` drive. On boot, the device immediately begins advertising over BLE.
+- Download the libraries from the above circuitpython link and copy the libraries used to the MCU as well.
 
 ### Key Behaviors
 
@@ -145,12 +144,6 @@ Copy `code.py` to the root of the `CIRCUITPY` drive. On boot, the device immedia
 - Resolution: 16-bit duty cycle
 - Both motors run identically from a single PWM signal through both DRV8833 channels
 
-**Power & battery management** — the firmware samples VBAT via the XIAO's on-module divider, reports voltage over BLE, and cuts the motors off at a low-battery threshold to protect the cell. The 3.3 V motor rail is regulated by a buck.
-
-**Planned safeguards (TODO)**
-- nFAULT sampling on D1 with immediate PWM shutdown on an active-low fault.
-- 20-minute maximum continuous activation.
-- Motors disabled while USB is plugged in (until load-sharing and thermal behavior are validated).
 
 ### BLE / GATT
 
@@ -173,30 +166,18 @@ The device advertises a custom GATT service. The client writes motor speed as a 
 | 3 | uint8 | Battery critical flag (0 or 1) |
 | 4 | uint8 | Motor fault latched (0 or 1) |
 
----
-
-## Web UI
-
-The control interface is a static page hosted on GitHub Pages. It uses the Web Bluetooth API to connect directly to the device over BLE.
-
-**To use:**
-
-1. Open the GitHub Pages URL in Chrome on your mobile device
-2. Tap **Connect** and select the `vts` device from the browser's BLE picker
-3. Use the speed slider to set motor intensity
-4. Tap **Disconnect** when the session is complete
 
 ---
 
 ## Usage
 
 1. Position the motors against the left and right lateral edges of your thyroid cartilage
-2. Open the Web UI in Chrome
+2. Open the Web UI <https://isolrac.github.io/vts/mcu_code/> in Chrome on your mobile device
 3. Tap **Connect** and pair with `vts`
-4. Set motor speed using the slider — start low and increase until vibration is clearly perceptible but comfortable
-5. Tap **Disconnect** when the session is complete
+4. Use the speed slider to set motor intensity
+5. Tap **Disconnect** when done.
 
-**Recommended protocol (from in-home feasibility study):** 3 sessions per week for the first month, increasing as tolerated.
+**Recommended usage (from in-home feasibility study):** 3 sessions per week for the first month, increasing as tolerated.
 
 ---
 
